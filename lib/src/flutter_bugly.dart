@@ -84,8 +84,11 @@ class FlutterBugly {
 
   /// 自定义渠道标识，Android 专用
   static Future<Null> setAppChannel(String channel) async {
-    Map<String, Object> map = {"channel": channel};
-    await _channel.invokeMethod('setAppChannel', map);
+    assert(Platform.isAndroid, 'setAppChannel only supports on Android.');
+    if (Platform.isAndroid) {
+      Map<String, Object> map = {"channel": channel};
+      await _channel.invokeMethod('setAppChannel', map);
+    }
   }
 
   /// 设置用户标识
@@ -133,11 +136,16 @@ class FlutterBugly {
     await _channel.invokeMethod('checkUpgrade', map);
   }
 
-  /// 异常上报
+  /// 异常上报。该方法等同于 [runZonedGuarded]。
+  ///
+  /// [callback] 运行的内容。
+  /// [onException] 自定义异常处理，可用于异常打印、双上报等定制逻辑。该字段不影响上报。
+  /// [filterRegExp] 针对 message 正则过滤异常上报。
+  /// [debugUpload] 是否在调试模式也上报。
   static void postCatchedException<T>(
     T callback(), {
-    FlutterExceptionHandler? handler, // 异常捕捉，用于自定义打印异常（处理后不再上报）
-    String? filterRegExp, // 异常上报过滤正则，针对 message
+    FlutterExceptionHandler? onException,
+    String? filterRegExp,
     bool debugUpload = false,
   }) {
     bool _isDebug = false;
@@ -148,6 +156,15 @@ class FlutterBugly {
       var _stackTrace = isolateError.last;
       Zone.current.handleUncaughtError(_error, _stackTrace);
     }).sendPort);
+    // This captures errors reported by the Flutter framework.
+    FlutterError.onError = (details) {
+      if (details.stack != null) {
+        Zone.current.handleUncaughtError(details.exception, details.stack!);
+      } else {
+        FlutterError.presentError(details);
+      }
+    };
+    _postCaught = true;
     // This creates a [Zone] that contains the Flutter application and stablishes
     // an error handler that captures errors and reports them.
     //
@@ -165,20 +182,11 @@ class FlutterBugly {
       _filterAndUploadException(
         debugUpload,
         _isDebug,
-        handler,
+        onException,
         filterRegExp,
         FlutterErrorDetails(exception: error, stack: stackTrace),
       );
     });
-    // This captures errors reported by the Flutter framework.
-    FlutterError.onError = (details) {
-      if (details.stack != null) {
-        Zone.current.handleUncaughtError(details.exception, details.stack!);
-      } else {
-        FlutterError.presentError(details);
-      }
-    };
-    _postCaught = true;
   }
 
   static void _filterAndUploadException(
@@ -208,14 +216,16 @@ class FlutterBugly {
     String? filterRegExp,
     FlutterErrorDetails details,
   ) {
-    // 默认 debug 下打印异常，不上传异常
+    if (handler != null) {
+      handler(details);
+    } else {
+      FlutterError.onError?.call(details);
+    }
+    // Debug 时默认不上传异常。
     if (!debugUpload && _isDebug) {
-      handler == null
-          ? FlutterError.dumpErrorToConsole(details)
-          : handler(details);
       return true;
     }
-    // 异常过滤
+    // 异常过滤。
     if (filterRegExp != null) {
       RegExp reg = new RegExp(filterRegExp);
       Iterable<Match> matches = reg.allMatches(details.exception.toString());
